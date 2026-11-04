@@ -1,4 +1,4 @@
-import csv, io, json, os, re, secrets, sqlite3, hashlib, hmac, base64, time, math, threading
+import csv, io, json, os, re, secrets, sqlite3, hashlib, hmac, base64, time, math, threading, datetime
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -13,6 +13,9 @@ DATA.mkdir(parents=True,exist_ok=True)
 MAX_BODY=8*1024*1024
 IMPORT_LOCK=threading.Lock()
 AUTO_LOG=DATA/"import_status.json"
+SCHEDULE_CACHE=DATA/"nfl_schedule_cache.json"
+SCHEDULE_LOCK=threading.Lock()
+SCHEDULE_SOURCE="https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
 NFLVERSE_URL="https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
 GAME_COLUMNS=["season","week","player","team","pos","opponent","passing_yards","passing_tds","interceptions","rushing_yards","rushing_tds","receptions","receiving_yards","receiving_tds","targets","fumbles_lost"]
 
@@ -29,7 +32,9 @@ CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER 
 CREATE TABLE IF NOT EXISTS leagues(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,name TEXT NOT NULL,scoring TEXT NOT NULL,roster TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS player_games(id INTEGER PRIMARY KEY,season INTEGER NOT NULL,week INTEGER NOT NULL,player TEXT NOT NULL,team TEXT,pos TEXT,opponent TEXT,passing_yards REAL DEFAULT 0,passing_tds REAL DEFAULT 0,interceptions REAL DEFAULT 0,rushing_yards REAL DEFAULT 0,rushing_tds REAL DEFAULT 0,receptions REAL DEFAULT 0,receiving_yards REAL DEFAULT 0,receiving_tds REAL DEFAULT 0,targets REAL DEFAULT 0,fumbles_lost REAL DEFAULT 0, UNIQUE(season,week,player,team));
 CREATE INDEX IF NOT EXISTS idx_pg_player ON player_games(player,season,week);
-CREATE INDEX IF NOT EXISTS idx_pg_season_week ON player_games(season,week DESC);''')
+CREATE INDEX IF NOT EXISTS idx_pg_season_week ON player_games(season,week DESC);
+CREATE TABLE IF NOT EXISTS projection_snapshots(id INTEGER PRIMARY KEY,season INTEGER NOT NULL,week INTEGER NOT NULL,player TEXT NOT NULL,team TEXT NOT NULL,opponent TEXT NOT NULL,scoring TEXT NOT NULL,projected REAL NOT NULL,created_utc INTEGER NOT NULL, UNIQUE(season,week,player,team,scoring));
+CREATE INDEX IF NOT EXISTS idx_snapshot_season_week ON projection_snapshots(season,week);''')
 
 def hash_password(p,salt=None):
  salt=salt or secrets.token_bytes(16)
@@ -183,6 +188,94 @@ def player_projection(c,name,season,scoring,opponent=''):
   'methodology':'65% season average + 35% last-five average for players with at least five games (recent weight shrinks for smaller samples). Optional opponent multiplier uses league-relative total position points allowed per observed week, shrunk toward 1.0 and capped at +/-15%. Floor/ceiling are shifted historical 20th/80th percentiles, not calibrated probability bounds.',
   'limitations':['Opponent is manually selected; not verified against the upcoming schedule','No live injury, depth chart, snap share, weather, coverage scheme or opponent personnel adjustments','Historical game logs may include incomplete weeks or player absences; model is not backtested or calibrated']}
 
+
+# 3.5: schedule rows are sourced from nflverse's nflverse/nfldata games CSV.
+# Only regular-season scheduled matchups are used; no fabricated opponent fallback.
+def fetch_schedule(force=False):
+ with SCHEDULE_LOCK:
+  if not force and SCHEDULE_CACHE.exists():
+   try:
+    saved=json.loads(SCHEDULE_CACHE.read_text())
+    if time.time()-saved['fetched_utc']<6*3600 and saved.get('games'):return saved
+   except (ValueError,KeyError,OSError,TypeError):pass
+  try:
+   req=Request(SCHEDULE_SOURCE,headers={'User-Agent':'RosterHelix/3.5','Accept':'text/csv'})
+   with urlopen(req,timeout=15) as resp: raw=resp.read(6*1024*1024+1)
+   if len(raw)>6*1024*1024:raise ValueError('Schedule too large')
+   reader=csv.DictReader(io.StringIO(raw.decode('utf-8-sig')))
+   required={'season','week','home_team','away_team','gameday'}
+   if not required.issubset(set(reader.fieldnames or [])):raise ValueError('Schedule schema changed')
+   games=[]
+   for row in reader:
+    if (row.get('game_type') or row.get('season_type') or 'REG').upper() not in ('REG','REGULAR'):continue
+    try:
+     season=int(row['season']);week=int(row['week']);date=row['gameday'][:10]
+     datetime.date.fromisoformat(date)
+     home=row['home_team'].strip().upper();away=row['away_team'].strip().upper()
+     if not (1999<=season<=2100 and 1<=week<=18 and re.fullmatch('[A-Z]{2,3}',home) and re.fullmatch('[A-Z]{2,3}',away)):continue
+     # Time is not used to imply kickoff time: gameday date is the available guarantee.
+     games.append({'season':season,'week':week,'date':date,'home':home,'away':away})
+    except (ValueError,KeyError,TypeError):continue
+   if not games:raise ValueError('No valid schedule rows')
+   saved={'fetched_utc':int(time.time()),'source':SCHEDULE_SOURCE,'games':games}
+   temp=SCHEDULE_CACHE.with_suffix('.tmp');temp.write_text(json.dumps(saved));temp.replace(SCHEDULE_CACHE)
+   return saved
+  except Exception:
+   if SCHEDULE_CACHE.exists():
+    try:
+     saved=json.loads(SCHEDULE_CACHE.read_text())
+     if saved.get('games'):
+      saved['stale']=True;return saved
+    except (ValueError,OSError):pass
+   raise
+
+def schedule_matchup(games,season,team,week=None):
+ if not team:return None
+ today=datetime.datetime.now(datetime.timezone.utc).date()
+ choices=sorted((g for g in games if g['season']==season and team in (g['home'],g['away']) and (week is None or g['week']==week) and g['date']>=today.isoformat()),key=lambda g:(g['date'],g['week']))
+ if not choices:return None
+ g=choices[0]
+ return {'week':g['week'],'date':g['date'],'opponent':g['away'] if team==g['home'] else g['home'],'location':'home' if team==g['home'] else 'away'}
+
+def save_upcoming_snapshots():
+ """Immutable, pre-game forecasts. Called only after successful secured daily import."""
+ try:schedule=fetch_schedule()
+ except Exception:return {'saved':0,'reason':'Schedule unavailable'}
+ today=datetime.datetime.now(datetime.timezone.utc).date()
+ with connect() as c:
+  season=current_nfl_season()
+  future=sorted((g for g in schedule['games'] if g['season']==season and g['date']>today.isoformat()),key=lambda g:(g['date'],g['week']))
+  if not future:return {'saved':0,'reason':'No future regular-season games'}
+  week=future[0]['week']
+  games=[g for g in future if g['week']==week]
+  # Only teams scheduled for the same future week; avoid projections for BYE teams.
+  opponents={g['home']:g['away'] for g in games}
+  opponents.update({g['away']:g['home'] for g in games})
+  rows=c.execute("SELECT player,team,MAX(week) latest FROM player_games WHERE season=? AND pos IN ('QB','RB','WR','TE') GROUP BY player,team",(season,)).fetchall()
+  now=int(time.time());saved=0
+  for r in rows:
+   team=(r['team'] or '').upper();opp=opponents.get(team)
+   if not opp or r['latest']>=week:continue
+   for scoring in ('ppr','half','standard'):
+    try:estimate=player_projection(c,r['player'],season,scoring,opp)
+    except ValueError:continue
+    result=c.execute('INSERT OR IGNORE INTO projection_snapshots(season,week,player,team,opponent,scoring,projected,created_utc) VALUES(?,?,?,?,?,?,?,?)',(season,week,r['player'],team,opp,scoring,estimate['projected_points'],now))
+    saved+=result.rowcount
+  return {'saved':saved,'season':season,'week':week,'schedule_stale':bool(schedule.get('stale'))}
+
+def accuracy_report(c,season,scoring):
+ # Compare only snapshots against matching completed game logs; never invent missing outcomes.
+ rows=c.execute("""SELECT s.week,s.player,s.team,s.opponent,s.projected,s.created_utc,p.* FROM projection_snapshots s JOIN player_games p ON p.season=s.season AND p.week=s.week AND p.player=s.player AND p.team=s.team WHERE s.season=? AND s.scoring=? ORDER BY s.week DESC,s.player LIMIT 10000""",(season,scoring)).fetchall()
+ data=[]
+ for r in rows:
+  actual=fantasy(r,scoring);error=r['projected']-actual
+  data.append({'week':r['week'],'player':r['player'],'team':r['team'],'projected':r['projected'],'actual':actual,'error':round(error,2),'abs_error':round(abs(error),2)})
+ n=len(data)
+ by_week={}
+ for d in data:by_week.setdefault(d['week'],[]).append(d)
+ weekly=[{'week':w,'count':len(v),'mae':round(sum(x['abs_error'] for x in v)/len(v),2),'bias':round(sum(x['error'] for x in v)/len(v),2)} for w,v in sorted(by_week.items())]
+ return {'season':season,'scoring':scoring,'evaluated':n,'mae':round(sum(d['abs_error'] for d in data)/n,2) if n else None,'bias':round(sum(d['error'] for d in data)/n,2) if n else None,'weekly':weekly,'recent':data[:30],'methodology':'Pre-game immutable projection snapshots compared to imported actual game logs. MAE = average absolute error; bias = average projected minus actual. Only matched records are evaluated.','limitations':['No snapshots exist for games before 3.5 was enabled','Missing game logs and inactive players are not counted as zero; results have selection bias','A low MAE alone does not establish start/sit decision quality or a calibrated probability']}
+
 class Handler(SimpleHTTPRequestHandler):
  def __init__(self,*a,**kw):super().__init__(*a,directory=str(ROOT/'static'),**kw)
  def send_json(self,obj,status=200,headers=None):
@@ -209,7 +302,7 @@ class Handler(SimpleHTTPRequestHandler):
   return self.rfile.read(n)
  def do_GET(self):
   p=urlparse(self.path).path
-  if p=='/api/health':return self.send_json({'ok':True,'version':'3.4-projections','current_nfl_season':current_nfl_season()})
+  if p=='/api/health':return self.send_json({'ok':True,'version':'3.5-schedule-accuracy','current_nfl_season':current_nfl_season()})
   if p=='/api/automation/status':
    # Public status intentionally exposes no credentials or internal error details.
    try:
@@ -240,6 +333,22 @@ class Handler(SimpleHTTPRequestHandler):
      result=comparison(c,names,year,scoring,kind)
     return self.send_json(result)
    except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/schedule':
+   q=parse_qs(urlparse(self.path).query);season=q.get('season',[''])[0]
+   try:
+    year=int(season) if season.isdigit() else current_nfl_season()
+    saved=fetch_schedule()
+    teams=q.get('team',[])
+    if len(teams)>2 or any(not re.fullmatch('[A-Z]{2,3}',t.upper()) for t in teams):return self.send_json({'error':'Invalid team'},400)
+    result={t.upper():schedule_matchup(saved['games'],year,t.upper()) for t in teams}
+    return self.send_json({'season':year,'matchups':result,'source':saved['source'],'fetched_utc':saved['fetched_utc'],'stale':bool(saved.get('stale')),'notice':'Schedule dates, not kickoff times. No future matchup means bye, season ended, or schedule unavailable.'})
+   except (OSError,ValueError,URLError,HTTPError,TimeoutError) as e:return self.send_json({'error':'Verified schedule unavailable; choose opponents manually','detail':type(e).__name__},503)
+  if p=='/api/accuracy':
+   q=parse_qs(urlparse(self.path).query);scoring=q.get('scoring',['ppr'])[0];season=q.get('season',[''])[0]
+   if scoring not in ('ppr','half','standard'):return self.send_json({'error':'Invalid scoring'},400)
+   with connect() as c:
+    year=int(season) if season.isdigit() else current_nfl_season()
+    return self.send_json(accuracy_report(c,year,scoring))
   if p=='/api/projection':
     q=parse_qs(urlparse(self.path).query,keep_blank_values=True)
     scoring=q.get('scoring',['ppr'])[0];season=q.get('season',[''])[0]
@@ -254,7 +363,7 @@ class Handler(SimpleHTTPRequestHandler):
       if year is None:return self.send_json({'error':'Import player data first'},400)
       players=[player_projection(c,name.strip(),year,scoring,opponents[i].upper() if opponents else '') for i,name in enumerate(names)]
      ranked=sorted(players,key=lambda p:p['projected_points'],reverse=True)
-     return self.send_json({'version':'3.4','players':players,'recommended_start':ranked[0]['name'] if len(ranked)>1 else None,
+     return self.send_json({'version':'3.5','players':players,'recommended_start':ranked[0]['name'] if len(ranked)>1 else None,
       'projection_edge':round(ranked[0]['projected_points']-ranked[1]['projected_points'],2) if len(ranked)>1 else None,
       'recommendation_basis':'Higher estimated fantasy points from the specified historical season; not a validated weekly forecast'})
     except ValueError as e:return self.send_json({'error':str(e)},400)
