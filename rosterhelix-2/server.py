@@ -35,6 +35,8 @@ CREATE INDEX IF NOT EXISTS idx_pg_player ON player_games(player,season,week);
 CREATE INDEX IF NOT EXISTS idx_pg_season_week ON player_games(season,week DESC);
 CREATE TABLE IF NOT EXISTS projection_snapshots(id INTEGER PRIMARY KEY,season INTEGER NOT NULL,week INTEGER NOT NULL,player TEXT NOT NULL,team TEXT NOT NULL,opponent TEXT NOT NULL,scoring TEXT NOT NULL,projected REAL NOT NULL,created_utc INTEGER NOT NULL, UNIQUE(season,week,player,team,scoring));
 CREATE INDEX IF NOT EXISTS idx_snapshot_season_week ON projection_snapshots(season,week);''')
+  cols={r[1] for r in c.execute('PRAGMA table_info(projection_snapshots)')}
+  if 'model_version' not in cols:c.execute("ALTER TABLE projection_snapshots ADD COLUMN model_version TEXT NOT NULL DEFAULT '3.5-historical'")
 
 def hash_password(p,salt=None):
  salt=salt or secrets.token_bytes(16)
@@ -146,6 +148,42 @@ def percentile(values, fraction):
  index=(len(values)-1)*fraction;lo=int(index);hi=min(lo+1,len(values)-1)
  return values[lo]+(values[hi]-values[lo])*(index-lo)
 
+def opportunity_projection(rows, scoring):
+ """Estimate opportunity and efficiency separately using recorded box-score columns only.
+ Returns None for QB or insufficient samples. All rates use additive shrinkage.
+ """
+ if len(rows)<3 or rows[0]['pos'] not in ('RB','WR','TE'):return None
+ pos=rows[0]['pos'];n=len(rows)
+ # Chronological recent emphasis; all observed games contribute.
+ weights=[0.85**i for i in range(n)]
+ def mean(field):
+  return sum(float(r[field] or 0)*w for r,w in zip(rows,weights))/sum(weights)
+ def total(field):return sum(float(r[field] or 0) for r in rows)
+ targets=mean('targets');carries=mean('carries') if 'carries' in rows[0].keys() else 0
+ # nflverse player_games currently has no carries column. Avoid pretending it does.
+ # RB rushing opportunity uses yards per game as a descriptive proxy, not carries.
+ receptions=total('receptions');target_total=total('targets')
+ catch_rate=(receptions+3.0)/(target_total+5.0) if target_total>0 else 0
+ catch_rate=max(0,min(1,catch_rate))
+ receiving_yards=total('receiving_yards');yards_per_catch=(receiving_yards+35)/(receptions+4) if receptions else 0
+ exp_receptions=targets*catch_rate
+ exp_rec_yards=exp_receptions*yards_per_catch
+ # TD rates are heavily shrunk to prevent 1-2 touchdowns from dominating a forecast.
+ rec_tds=(total('receiving_tds')+0.3)/(target_total+25) if target_total else 0
+ exp_rec_tds=targets*rec_tds
+ rush_yards=mean('rushing_yards')
+ rush_tds=(total('rushing_tds')+0.3)/(n+8)
+ exp_rush_tds=rush_tds
+ fumbles=mean('fumbles_lost')
+ ppr={'ppr':1,'half':0.5,'standard':0}[scoring]
+ estimate=exp_rec_yards/10+exp_receptions*ppr+exp_rec_tds*6+rush_yards/10+exp_rush_tds*6-fumbles*2
+ return {'estimated_points':round(max(0,estimate),2),'targets_per_game':round(targets,2),
+  'expected_receptions':round(exp_receptions,2),'expected_receiving_yards':round(exp_rec_yards,1),
+  'expected_receiving_tds':round(exp_rec_tds,3),'expected_rushing_yards':round(rush_yards,1),
+  'expected_rushing_tds':round(exp_rush_tds,3),'catch_rate_estimate':round(catch_rate,3),
+  'rush_attempts_available':False,'snap_share_available':False,'routes_run_available':False,
+  'methodology':'Exponential recent weighting (0.85 per older game) for targets and rushing yards. Catch rate, yards per reception and touchdown rates use additive shrinkage. No carries, snaps, routes, red-zone attempts, injuries or coverage scheme columns are present in the imported game logs.'}
+
 def player_projection(c,name,season,scoring,opponent=''):
  """Transparent baseline using historical game logs and optional defensive positional allowance."""
  rows=c.execute('SELECT * FROM player_games WHERE player=? AND season=? ORDER BY week DESC',(name,season)).fetchall()
@@ -172,21 +210,24 @@ def player_projection(c,name,season,scoring,opponent=''):
     raw=allowance/league_allowance
     shrink=sample_weeks/(sample_weeks+8)
     multiplier=max(.85,min(1.15,1+(raw-1)*.35*shrink))
- projection=round(max(0,baseline*multiplier),2)
+ opportunity=opportunity_projection(rows,scoring)
+ # A cautious 50/50 blend; a separate opportunity model is not yet proven superior.
+ blended=.5*baseline+.5*opportunity['estimated_points'] if opportunity else baseline
+ projection=round(max(0,blended*multiplier),2)
  # Empirical distribution shifted by the baseline and opponent adjustment; not calibrated probabilities.
  shift=projection-season_avg
  floor=round(max(0,percentile(points,.20)+shift),2)
  ceiling=round(max(projection,percentile(points,.80)+shift),2)
  floor=min(floor,projection)
  return {'name':name,'team':rows[0]['team'],'position':pos,'season':season,'scoring':scoring,'opponent':opponent or None,
-  'projected_points':projection,'floor':floor,'ceiling':ceiling,'games':n,
+  'projected_points':projection,'floor':floor,'ceiling':ceiling,'games':n,'opportunity':opportunity,'model_version':'3.6-opportunity-v1',
   'season_ppg':round(season_avg,2),'recent_ppg':round(recent_avg,2),
   'opponent_multiplier':round(multiplier,3),'opponent_sample_weeks':sample_weeks,
   'opponent_position_points_allowed':round(allowance,2) if allowance is not None else None,
   'league_position_points_allowed':round(league_allowance,2) if league_allowance is not None else None,
   'confidence':'low' if n<4 else 'moderate' if n<8 else 'historical sample adequate',
-  'methodology':'65% season average + 35% last-five average for players with at least five games (recent weight shrinks for smaller samples). Optional opponent multiplier uses league-relative total position points allowed per observed week, shrunk toward 1.0 and capped at +/-15%. Floor/ceiling are shifted historical 20th/80th percentiles, not calibrated probability bounds.',
-  'limitations':['Opponent is manually selected; not verified against the upcoming schedule','No live injury, depth chart, snap share, weather, coverage scheme or opponent personnel adjustments','Historical game logs may include incomplete weeks or player absences; model is not backtested or calibrated']}
+  'methodology':'For RB/WR/TE with 3+ games, 50% historical fantasy baseline and 50% box-score opportunity estimate; otherwise 3.5 historical baseline. Opponent multiplier uses league-relative position points allowed, shrunk and capped at +/-15%. Historical 20th/80th percentile ranges are not calibrated probability intervals.',
+  'limitations':['Schedule auto-detection is available separately; manual opponent choices are not verified','No live injury, depth chart, snap share, routes run, carries, weather or coverage scheme data','The 3.6 blend has not been shown to outperform 3.5 on held-out games; historical intervals are not calibrated']}
 
 
 # 3.5: schedule rows are sourced from nflverse's nflverse/nfldata games CSV.
@@ -259,22 +300,23 @@ def save_upcoming_snapshots():
    for scoring in ('ppr','half','standard'):
     try:estimate=player_projection(c,r['player'],season,scoring,opp)
     except ValueError:continue
-    result=c.execute('INSERT OR IGNORE INTO projection_snapshots(season,week,player,team,opponent,scoring,projected,created_utc) VALUES(?,?,?,?,?,?,?,?)',(season,week,r['player'],team,opp,scoring,estimate['projected_points'],now))
+    result=c.execute('INSERT OR IGNORE INTO projection_snapshots(season,week,player,team,opponent,scoring,projected,created_utc,model_version) VALUES(?,?,?,?,?,?,?,?,?)',(season,week,r['player'],team,opp,scoring,estimate['projected_points'],now,'3.6-opportunity-v1'))
     saved+=result.rowcount
   return {'saved':saved,'season':season,'week':week,'schedule_stale':bool(schedule.get('stale'))}
 
 def accuracy_report(c,season,scoring):
  # Compare only snapshots against matching completed game logs; never invent missing outcomes.
- rows=c.execute("""SELECT s.week,s.player,s.team,s.opponent,s.projected,s.created_utc,p.* FROM projection_snapshots s JOIN player_games p ON p.season=s.season AND p.week=s.week AND p.player=s.player AND p.team=s.team WHERE s.season=? AND s.scoring=? ORDER BY s.week DESC,s.player LIMIT 10000""",(season,scoring)).fetchall()
+ rows=c.execute("""SELECT s.week,s.player,s.team,s.opponent,s.projected,s.created_utc,s.model_version,p.* FROM projection_snapshots s JOIN player_games p ON p.season=s.season AND p.week=s.week AND p.player=s.player AND p.team=s.team WHERE s.season=? AND s.scoring=? ORDER BY s.week DESC,s.player LIMIT 10000""",(season,scoring)).fetchall()
  data=[]
  for r in rows:
   actual=fantasy(r,scoring);error=r['projected']-actual
-  data.append({'week':r['week'],'player':r['player'],'team':r['team'],'projected':r['projected'],'actual':actual,'error':round(error,2),'abs_error':round(abs(error),2)})
+  data.append({'week':r['week'],'player':r['player'],'team':r['team'],'projected':r['projected'],'actual':actual,'error':round(error,2),'abs_error':round(abs(error),2),'model_version':r['model_version']})
  n=len(data)
  by_week={}
  for d in data:by_week.setdefault(d['week'],[]).append(d)
  weekly=[{'week':w,'count':len(v),'mae':round(sum(x['abs_error'] for x in v)/len(v),2),'bias':round(sum(x['error'] for x in v)/len(v),2)} for w,v in sorted(by_week.items())]
- return {'season':season,'scoring':scoring,'evaluated':n,'mae':round(sum(d['abs_error'] for d in data)/n,2) if n else None,'bias':round(sum(d['error'] for d in data)/n,2) if n else None,'weekly':weekly,'recent':data[:30],'methodology':'Pre-game immutable projection snapshots compared to imported actual game logs. MAE = average absolute error; bias = average projected minus actual. Only matched records are evaluated.','limitations':['No snapshots exist for games before 3.5 was enabled','Missing game logs and inactive players are not counted as zero; results have selection bias','A low MAE alone does not establish start/sit decision quality or a calibrated probability']}
+ versions=sorted(set(d['model_version'] for d in data))
+ return {'season':season,'scoring':scoring,'model_versions':versions,'evaluated':n,'mae':round(sum(d['abs_error'] for d in data)/n,2) if n else None,'bias':round(sum(d['error'] for d in data)/n,2) if n else None,'weekly':weekly,'recent':data[:30],'methodology':'Pre-game immutable version-labeled projection snapshots compared to imported actual game logs. MAE = average absolute error; bias = average projected minus actual. Only matched records are evaluated.','limitations':['No snapshots exist for games before 3.5 was enabled','Missing game logs and inactive players are not counted as zero; results have selection bias','A low MAE alone does not establish start/sit decision quality or a calibrated probability']}
 
 class Handler(SimpleHTTPRequestHandler):
  def __init__(self,*a,**kw):super().__init__(*a,directory=str(ROOT/'static'),**kw)
@@ -302,7 +344,7 @@ class Handler(SimpleHTTPRequestHandler):
   return self.rfile.read(n)
  def do_GET(self):
   p=urlparse(self.path).path
-  if p=='/api/health':return self.send_json({'ok':True,'version':'3.5-schedule-accuracy','current_nfl_season':current_nfl_season()})
+  if p=='/api/health':return self.send_json({'ok':True,'version':'3.6-player-intelligence','current_nfl_season':current_nfl_season()})
   if p=='/api/automation/status':
    # Public status intentionally exposes no credentials or internal error details.
    try:
@@ -363,7 +405,7 @@ class Handler(SimpleHTTPRequestHandler):
       if year is None:return self.send_json({'error':'Import player data first'},400)
       players=[player_projection(c,name.strip(),year,scoring,opponents[i].upper() if opponents else '') for i,name in enumerate(names)]
      ranked=sorted(players,key=lambda p:p['projected_points'],reverse=True)
-     return self.send_json({'version':'3.5','players':players,'recommended_start':ranked[0]['name'] if len(ranked)>1 else None,
+     return self.send_json({'version':'3.6','players':players,'recommended_start':ranked[0]['name'] if len(ranked)>1 else None,
       'projection_edge':round(ranked[0]['projected_points']-ranked[1]['projected_points'],2) if len(ranked)>1 else None,
       'recommendation_basis':'Higher estimated fantasy points from the specified historical season; not a validated weekly forecast'})
     except ValueError as e:return self.send_json({'error':str(e)},400)
@@ -523,4 +565,4 @@ class Handler(SimpleHTTPRequestHandler):
   return self.send_json({'error':'Not found'},404)
 
 if __name__=='__main__':
- setup();port=int(os.environ.get('PORT','8000'));print(f'RosterHelix 3.0 phase 1 listening on {port}',flush=True);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
+ setup();port=int(os.environ.get('PORT','8000'));print(f'RosterHelix 3.6 listening on {port}',flush=True);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
