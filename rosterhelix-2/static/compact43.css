@@ -1,0 +1,41 @@
+
+/* RosterHelix 4.3 – compact workspace enhancements */
+.rh43-custom-bar,.rh43-page-head,.rh43-explorer-tools{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.rh43-custom-bar{padding:10px 12px;margin:9px 0;background:#fff;border:1px solid #d8e4f5;border-radius:12px}
+.rh43-custom-bar small{display:block;color:#69809d;font-size:11px;margin-top:3px}
+.rh43-btn{border:1px solid #c8d8ee;background:#fff;color:#124579;border-radius:8px;padding:7px 11px;font-weight:650;cursor:pointer}
+.rh43-btn:hover,.rh43-edit-row button:hover{background:#eaf3ff}
+.rh43-editor{background:#fff;border:1px solid #d8e4f5;border-radius:12px;padding:10px;margin-bottom:10px}
+.rh43-editor[hidden],.rh41-grid[hidden],.rh41-tiles[hidden],.rh41-shell>.rh41-panel[hidden]{display:none!important}
+.rh43-edit-row{display:flex;justify-content:space-between;align-items:center;padding:7px 3px;border-bottom:1px solid #e9eff8;font-size:13px}
+.rh43-edit-row button{padding:5px 10px;background:#f7faff;border:1px solid #d8e4f5;border-radius:6px;margin-left:4px;cursor:pointer}
+.rh43-page-head{margin-bottom:10px}.rh43-page-head h2{margin:2px 0;font-size:21px}.rh43-page-head p{margin:0;color:#637b9a;font-size:12px}
+.rh43-kicker{font-size:10px;color:#1d6ed0;letter-spacing:1.5px;font-weight:750}
+.rh43-legacy{display:none!important}
+.rh43-trade-app,.rh43-output{border:1px solid #d8e4f5;border-radius:12px;padding:13px;background:#fff;margin-bottom:10px}
+.rh43-trade-controls{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.rh43-trade-controls label,.rh43-explorer-tools label{display:flex;flex-direction:column;gap:3px;color:#4b6688;font-size:11px;font-weight:700}
+.rh43-trade-controls input,.rh43-trade-controls select,.rh43-explorer-tools select{border:1px solid #cddcf0;border-radius:7px;padding:8px;background:#fff;color:#15365c}
+.rh43-trade-sides{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.rh43-trade-side,.rh43-side-result{border:1px solid #dbe5f3;border-radius:10px;padding:12px;min-width:0;background:#f9fbff}
+.rh43-trade-side h3,.rh43-side-result h3{margin:0 0 9px;font-size:14px}
+.rh43-player-entry{display:flex;gap:5px;margin-bottom:7px;align-items:start}
+.rh43-player-search{position:relative;flex:1;min-width:0}
+.rh43-player-search input{width:100%;box-sizing:border-box}
+.rh43-remove{border:1px solid #d6e0ee;border-radius:7px;background:#fff;color:#b03444;font-size:20px;padding:4px 10px;cursor:pointer}
+.rh43-dropdown{position:absolute;z-index:50;top:100%;left:0;right:0;max-height:220px;overflow:auto;background:#fff;border:1px solid #a9c6e8;box-shadow:0 8px 20px #18335b25;border-radius:8px}
+.rh43-dropdown[hidden]{display:none}
+.rh43-dropdown button{display:block;width:100%;text-align:left;background:#fff;border:0;border-bottom:1px solid #eef3fb;padding:9px;font-size:12px;color:#12375d;cursor:pointer}
+.rh43-dropdown button:hover{background:#edf5ff}
+.rh43-output{margin-top:12px}.rh43-side-result>strong{font-size:23px;color:#126bd3}.rh43-side-result>strong small{font-size:10px;color:#627b9b}
+.rh43-stat-line{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid #e2eaf4;font-size:12px}
+.rh43-stat-line small{display:block;color:#69819b}
+.rh43-disclaimer{color:#627994;font-size:11px;line-height:1.5}
+.rh43-explorer-tools{justify-content:flex-start;flex-wrap:wrap;background:#fff;border:1px solid #dce6f4;border-radius:10px;padding:9px 12px;margin:10px 0}
+.rh43-count{font-size:11px;color:#56759a;margin-left:auto}
+.rh43-heatmap{margin:12px 0}.rh43-heat-title{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px;font-size:12px}.rh43-heat-title small{color:#647e9b}
+.rh43-heat-grid{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:5px}
+.rh43-heat-cell{background:rgba(35,111,214,var(--heat));border:1px solid #c9dcf3;border-radius:7px;padding:8px 4px;text-align:center;color:#123c69;min-width:0}
+.rh43-heat-cell b{display:block;font-size:11px}.rh43-heat-cell span{display:block;font-size:11px}
+@media(max-width:850px){.rh43-trade-sides{grid-template-columns:1fr}.rh43-heat-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.rh43-page-head{align-items:start;flex-direction:column}}
+@media(max-width:520px){.rh43-heat-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
