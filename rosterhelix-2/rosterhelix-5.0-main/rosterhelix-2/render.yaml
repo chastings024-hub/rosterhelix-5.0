@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: rosterhelix-2-staging
+    runtime: python
+    buildCommand: "echo Standard-library build"
+    startCommand: "python server.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: ROSTERHELIX_DATA_DIR
+        value: /var/data
+      - key: ADMIN_EMAIL
+        sync: false
+    disk:
+      name: rosterhelix2-data
+      mountPath: /var/data
+      sizeGB: 1
