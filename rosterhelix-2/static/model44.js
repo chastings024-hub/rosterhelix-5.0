@@ -1,0 +1,12 @@
+/* RosterHelix 4.4: leakage-free historical model evaluation panel. */
+(()=>{'use strict';
+const start=document.getElementById('start');if(!start)return;
+const host=document.createElement('section');host.className='rh44-model';host.innerHTML=`<div class="rh44-head"><div><b>Model Validation Lab</b><p>Walk-forward backtest: forecasts use only games played before each evaluated week.</p></div><button type="button" id="rh44Run">Run historical test</button></div><div id="rh44Results" aria-live="polite">Compare the existing projection model against a prior-season-to-date average baseline. No new model has been promoted.</div>`;
+start.append(host);
+const $=s=>document.querySelector(s),fmt=x=>x==null?'—':Number(x).toFixed(2);
+$('#rh44Run').onclick=async()=>{const button=$('#rh44Run'),out=$('#rh44Results');button.disabled=true;out.textContent='Evaluating prior-week-only projections. This may take a moment…';try{
+ const qs=new URLSearchParams({season:$('#ssSeason').value,scoring:$('#ssScoring').value});const r=await fetch('/api/backtest?'+qs,{credentials:'same-origin'});const d=await r.json();if(!r.ok)throw Error(d.error||'Backtest unavailable');if(!d.evaluated){out.textContent=d.notice||'No eligible games found';return}
+ const metric=(label,value)=>`<div class="rh44-metric"><small>${label}</small><strong>${value}</strong></div>`;
+ out.innerHTML=`<div class="rh44-metrics">${metric('Evaluated player-games',d.evaluated)}${metric('Model MAE',fmt(d.overall.model_mae))}${metric('Historical-average MAE',fmt(d.overall.season_average_mae))}${metric('Pairwise rank accuracy',d.pairwise_rank_accuracy==null?'—':(100*d.pairwise_rank_accuracy).toFixed(1)+'%')}${metric('Range coverage',d.overall.historical_range_coverage==null?'—':(100*d.overall.historical_range_coverage).toFixed(1)+'%')}</div><div class="rh44-table"><table><thead><tr><th>Position</th><th>Games</th><th>Model MAE</th><th>Baseline MAE</th></tr></thead><tbody>${Object.entries(d.by_position).map(([p,v])=>`<tr><td>${p}</td><td>${v.n}</td><td>${fmt(v.model_mae)}</td><td>${fmt(v.season_average_mae)}</td></tr>`).join('')}</tbody></table></div><p class="rh44-note">${d.methodology} Historical range coverage is diagnostic, not a calibrated confidence interval. Only active players with at least three earlier game logs are included. This does not validate injury, snap, or coverage adjustments.</p>`;
+ }catch(e){out.textContent='Backtest failed: '+e.message}finally{button.disabled=false}};
+})();
