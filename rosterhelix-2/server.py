@@ -190,6 +190,48 @@ class Handler(SimpleHTTPRequestHandler):
      result=comparison(c,names,year,scoring,kind)
     return self.send_json(result)
    except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/defense':
+   q=parse_qs(urlparse(self.path).query)
+   season=q.get('season',[''])[0]; scoring=q.get('scoring',['ppr'])[0]
+   position=q.get('position',['WR'])[0].upper()
+   if scoring not in ('ppr','half','standard') or position not in ('RB','WR','TE','QB'):
+    return self.send_json({'error':'Invalid scoring or position'},400)
+   with connect() as c:
+    year=int(season) if season.isdigit() else season_latest(c)
+    if year is None:return self.send_json({'season':None,'defenses':[]})
+    rows=c.execute("SELECT * FROM player_games WHERE season=? AND pos=? AND opponent IS NOT NULL AND opponent<>'' ORDER BY week",(year,position)).fetchall()
+   # Aggregate player fantasy points by defense and week, then average across observed weeks.
+   # This is team-level positional fantasy points allowed, NOT per-player opponent allowance.
+   weekly={}
+   for r in rows:
+    defense=(r['opponent'] or '').strip().upper()
+    if not defense:continue
+    key=(defense,int(r['week']))
+    entry=weekly.setdefault(key,{'points':0.0,'players':0,'targets':0.0,'receptions':0.0,'yards':0.0,'tds':0.0})
+    entry['points']+=fantasy(r,scoring);entry['players']+=1
+    entry['targets']+=float(r['targets'] or 0)
+    entry['receptions']+=float(r['receptions'] or 0)
+    entry['yards']+=float(r['receiving_yards'] or 0)+float(r['rushing_yards'] or 0)
+    entry['tds']+=float(r['receiving_tds'] or 0)+float(r['rushing_tds'] or 0)
+   grouped={}
+   for (team,week),entry in weekly.items():grouped.setdefault(team,[]).append((week,entry))
+   defenses=[]
+   for team,games in grouped.items():
+    games.sort(key=lambda x:x[0]);n=len(games)
+    totals={k:sum(e[k] for _,e in games) for k in ('points','targets','receptions','yards','tds')}
+    last=games[-4:]
+    defenses.append({'team':team,'weeks':n,'fantasy_points_allowed_per_game':round(totals['points']/n,2),
+     'last_four_allowed_per_game':round(sum(e['points'] for _,e in last)/len(last),2),
+     'targets_allowed_per_game':round(totals['targets']/n,1),'receptions_allowed_per_game':round(totals['receptions']/n,1),
+     'yards_allowed_per_game':round(totals['yards']/n,1),'touchdowns_allowed_per_game':round(totals['tds']/n,2),
+     'latest_week':games[-1][0]})
+   defenses.sort(key=lambda x:x['fantasy_points_allowed_per_game'],reverse=True)
+   for i,d in enumerate(defenses):d['rank_most_allowed']=i+1
+   return self.send_json({'season':year,'scoring':scoring,'position':position,'defenses':defenses,
+    'methodology':'Total recorded fantasy points by all players at the selected position against each opponent, divided by weeks with records. Higher means more points allowed. Includes only imported regular-season player game logs.',
+    'limitations':['Historical results, not an upcoming-game projection or coverage-scheme analysis',
+    'Missing/incomplete player logs can distort totals; week counts and sample sizes are displayed',
+    'No opponent-adjustment, injuries, weather, defensive personnel or schedule feed']})
   if p=='/api/players':
    q=parse_qs(urlparse(self.path).query);search=q.get('q',[''])[0].strip()[:80];season=q.get('season',[''])[0];scoring=q.get('scoring',['ppr'])[0]
    if scoring not in ('ppr','half','standard'):scoring='ppr'
