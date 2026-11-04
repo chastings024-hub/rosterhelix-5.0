@@ -27,7 +27,8 @@ def setup():
 CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,csrf TEXT NOT NULL,expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS leagues(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,name TEXT NOT NULL,scoring TEXT NOT NULL,roster TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS player_games(id INTEGER PRIMARY KEY,season INTEGER NOT NULL,week INTEGER NOT NULL,player TEXT NOT NULL,team TEXT,pos TEXT,opponent TEXT,passing_yards REAL DEFAULT 0,passing_tds REAL DEFAULT 0,interceptions REAL DEFAULT 0,rushing_yards REAL DEFAULT 0,rushing_tds REAL DEFAULT 0,receptions REAL DEFAULT 0,receiving_yards REAL DEFAULT 0,receiving_tds REAL DEFAULT 0,targets REAL DEFAULT 0,fumbles_lost REAL DEFAULT 0, UNIQUE(season,week,player,team));
-CREATE INDEX IF NOT EXISTS idx_pg_player ON player_games(player,season,week);''')
+CREATE INDEX IF NOT EXISTS idx_pg_player ON player_games(player,season,week);
+CREATE INDEX IF NOT EXISTS idx_pg_season_week ON player_games(season,week DESC);''')
 
 def hash_password(p,salt=None):
  salt=salt or secrets.token_bytes(16)
@@ -96,6 +97,10 @@ def import_nflverse_season(season):
 
 
 
+def current_nfl_season():
+ today=time.gmtime()
+ return today.tm_year if today.tm_mon>=3 else today.tm_year-1
+
 def season_latest(c):
  return c.execute('SELECT MAX(season) FROM player_games').fetchone()[0]
 
@@ -146,13 +151,13 @@ class Handler(SimpleHTTPRequestHandler):
   return self.rfile.read(n)
  def do_GET(self):
   p=urlparse(self.path).path
-  if p=='/api/health':return self.send_json({'ok':True,'version':'2.0'})
+  if p=='/api/health':return self.send_json({'ok':True,'version':'3.0-phase1','current_nfl_season':current_nfl_season()})
   if p=='/api/auth/me':
    u=self.user();return self.send_json({'authenticated':bool(u),'email':u['email'] if u else None,'csrf':u['csrf'] if u else None,'admin':self.admin(u)})
   if p=='/api/stats':
    with connect() as c:
     count=c.execute('SELECT count(*) n,count(DISTINCT player) players,min(season) first,max(season) last FROM player_games').fetchone()
-   return self.send_json({'games':count['n'],'players':count['players'],'first_season':count['first'],'last_season':count['last'],'demo':count['n']==0})
+   return self.send_json({'games':count['n'],'players':count['players'],'first_season':count['first'],'last_season':count['last'],'demo':count['n']==0,'current_nfl_season':current_nfl_season()})
   if p=='/api/search':
    q=parse_qs(urlparse(self.path).query);term=q.get('q',[''])[0].strip()[:80];season=q.get('season',[''])[0]
    with connect() as c:
@@ -175,9 +180,11 @@ class Handler(SimpleHTTPRequestHandler):
    q=parse_qs(urlparse(self.path).query);search=q.get('q',[''])[0].strip()[:80];season=q.get('season',[''])[0];scoring=q.get('scoring',['ppr'])[0]
    if scoring not in ('ppr','half','standard'):scoring='ppr'
    with connect() as c:
-    sql='SELECT * FROM player_games WHERE player LIKE ?';args=['%'+search+'%']
-    if season.isdigit():sql+=' AND season=?';args.append(int(season))
-    rows=c.execute(sql+' ORDER BY season DESC,week DESC LIMIT 20000',args).fetchall()
+    year=int(season) if season.isdigit() else season_latest(c)
+    if year is None:return self.send_json({'players':[],'scoring':scoring,'demo':True,'season':None})
+    sql='SELECT * FROM player_games WHERE season=?';args=[year]
+    if search:sql+=' AND player LIKE ?';args.append('%'+search+'%')
+    rows=c.execute(sql+' ORDER BY week DESC LIMIT 20000',args).fetchall()
    groups={}
    for r in rows:
     key=(r['player'],r['team'],r['pos']);g=groups.setdefault(key,{'name':r['player'],'team':r['team'],'pos':r['pos'],'games':0,'total':0,'recent':[]})
@@ -187,7 +194,7 @@ class Handler(SimpleHTTPRequestHandler):
    for g in groups.values():
     g['ppg']=round(g.pop('total')/g['games'],1);g['trend']=round(sum(g['recent'])/len(g['recent']),1);players.append(g)
    players.sort(key=lambda x:x['ppg'],reverse=True)
-   return self.send_json({'players':players[:100],'scoring':scoring,'demo':not bool(rows)})
+   return self.send_json({'players':players[:100],'scoring':scoring,'demo':not bool(rows),'season':year})
   if p=='/api/leagues':
    u=self.user()
    if not u:return self.send_json({'error':'Sign in to view leagues'},401)
@@ -209,8 +216,8 @@ class Handler(SimpleHTTPRequestHandler):
    try:
     body=json.loads(raw or b'{}')
     season=body.get('season')
-    if type(season) is not int or not 1999<=season<=2025:
-     return self.send_json({'error':'Choose one season from 1999 through 2025'},400)
+    if type(season) is not int or not 1999<=season<=current_nfl_season():
+     return self.send_json({'error':f'Choose one season from 1999 through {current_nfl_season()}'},400)
     if not IMPORT_LOCK.acquire(blocking=False):
      return self.send_json({'error':'Another import is running; retry shortly'},409)
     try:count=import_nflverse_season(season)
@@ -264,4 +271,4 @@ class Handler(SimpleHTTPRequestHandler):
   return self.send_json({'error':'Not found'},404)
 
 if __name__=='__main__':
- setup();port=int(os.environ.get('PORT','8000'));print(f'RosterHelix 2.0 listening on {port}',flush=True);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
+ setup();port=int(os.environ.get('PORT','8000'));print(f'RosterHelix 3.0 phase 1 listening on {port}',flush=True);ThreadingHTTPServer(('0.0.0.0',port),Handler).serve_forever()
