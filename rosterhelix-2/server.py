@@ -184,9 +184,9 @@ def opportunity_projection(rows, scoring):
   'rush_attempts_available':False,'snap_share_available':False,'routes_run_available':False,
   'methodology':'Exponential recent weighting (0.85 per older game) for targets and rushing yards. Catch rate, yards per reception and touchdown rates use additive shrinkage. No carries, snaps, routes, red-zone attempts, injuries or coverage scheme columns are present in the imported game logs.'}
 
-def player_projection(c,name,season,scoring,opponent=''):
+def player_projection(c,name,season,scoring,opponent='',before_week=None):
  """Transparent baseline using historical game logs and optional defensive positional allowance."""
- rows=c.execute('SELECT * FROM player_games WHERE player=? AND season=? ORDER BY week DESC',(name,season)).fetchall()
+ rows=c.execute('SELECT * FROM player_games WHERE player=? AND season=? AND (? IS NULL OR week<?) ORDER BY week DESC',(name,season,before_week,before_week)).fetchall()
  if not rows:raise ValueError('Player not found for the selected season')
  pos=rows[0]['pos'];points=[fantasy(r,scoring) for r in rows]
  n=len(points);recent=points[:min(5,n)];season_avg=sum(points)/n;recent_avg=sum(recent)/len(recent)
@@ -196,7 +196,7 @@ def player_projection(c,name,season,scoring,opponent=''):
  multiplier=1.0;sample_weeks=0;allowance=None;league_allowance=None
  if opponent:
   if pos not in ('QB','RB','WR','TE'):raise ValueError('Opponent adjustment unavailable for this position')
-  defense_rows=c.execute("SELECT week,opponent,pos,passing_yards,passing_tds,interceptions,rushing_yards,rushing_tds,receptions,receiving_yards,receiving_tds,fumbles_lost FROM player_games WHERE season=? AND pos=? AND opponent IS NOT NULL AND opponent<>''",(season,pos)).fetchall()
+  defense_rows=c.execute("SELECT week,opponent,pos,passing_yards,passing_tds,interceptions,rushing_yards,rushing_tds,receptions,receiving_yards,receiving_tds,fumbles_lost FROM player_games WHERE season=? AND pos=? AND opponent IS NOT NULL AND opponent<>'' AND (? IS NULL OR week<?)",(season,pos,before_week,before_week)).fetchall()
   per_defense={};all_weekly={}
   for r in defense_rows:
    key=(r['opponent'].upper(),r['week']);per_defense[key]=per_defense.get(key,0)+fantasy(r,scoring)
@@ -220,7 +220,7 @@ def player_projection(c,name,season,scoring,opponent=''):
  ceiling=round(max(projection,percentile(points,.80)+shift),2)
  floor=min(floor,projection)
  return {'name':name,'team':rows[0]['team'],'position':pos,'season':season,'scoring':scoring,'opponent':opponent or None,
-  'projected_points':projection,'floor':floor,'ceiling':ceiling,'games':n,'opportunity':opportunity,'model_version':'3.6-opportunity-v1',
+  'projected_points':projection,'floor':floor,'ceiling':ceiling,'games':n,'opportunity':opportunity,'model_version':'3.6-opportunity-v1' if before_week is None else '4.4-walk-forward-candidate',
   'season_ppg':round(season_avg,2),'recent_ppg':round(recent_avg,2),
   'opponent_multiplier':round(multiplier,3),'opponent_sample_weeks':sample_weeks,
   'opponent_position_points_allowed':round(allowance,2) if allowance is not None else None,
@@ -228,6 +228,42 @@ def player_projection(c,name,season,scoring,opponent=''):
   'confidence':'low' if n<4 else 'moderate' if n<8 else 'historical sample adequate',
   'methodology':'For RB/WR/TE with 3+ games, 50% historical fantasy baseline and 50% box-score opportunity estimate; otherwise 3.5 historical baseline. Opponent multiplier uses league-relative position points allowed, shrunk and capped at +/-15%. Historical 20th/80th percentile ranges are not calibrated probability intervals.',
   'limitations':['Schedule auto-detection is available separately; manual opponent choices are not verified','No live injury, depth chart, snap share, routes run, carries, weather or coverage scheme data','The 3.6 blend has not been shown to outperform 3.5 on held-out games; historical intervals are not calibrated']}
+
+
+def walk_forward_backtest(c,season,scoring,min_prior=3,max_rows=1800):
+ """True pregame evaluation: every forecast uses only weeks strictly before the target.
+
+ This tests the current 3.6 recipe as a candidate, not a new fitted model.
+ Results include only players with prior game logs and an actual game that week.
+ """
+ if scoring not in ('ppr','half','standard'):raise ValueError('Invalid scoring')
+ if not 1999<=season<=2100:raise ValueError('Invalid season')
+ games=c.execute("SELECT * FROM player_games WHERE season=? AND pos IN ('RB','WR','TE') AND week>=? ORDER BY week,player LIMIT ?",(season,min_prior+1,max_rows)).fetchall()
+ if not games:return {'season':season,'scoring':scoring,'evaluated':0,'notice':'Not enough historical data to backtest'}
+ evaluated=[];weekly={};by_position={};pair_week={}
+ for game in games:
+  week=int(game['week']);name=game['player'];pos=game['pos']
+  try:
+   projection=player_projection(c,name,season,scoring,(game['opponent'] or '').upper(),before_week=week)
+  except ValueError:continue
+  if projection['games']<min_prior:continue
+  actual=fantasy(game,scoring);prediction=projection['projected_points']
+  baseline=projection['season_ppg']
+  item={'week':week,'player':name,'position':pos,'predicted':prediction,'baseline':baseline,'actual':actual,'error':round(prediction-actual,2),'baseline_error':round(baseline-actual,2),'in_historical_range':projection['floor']<=actual<=projection['ceiling']}
+  evaluated.append(item);weekly.setdefault(week,[]).append(item);by_position.setdefault(pos,[]).append(item);pair_week.setdefault((week,pos),[]).append(item)
+ def stats(rows):
+  n=len(rows)
+  return {'n':n,'model_mae':round(sum(abs(x['error']) for x in rows)/n,3) if n else None,'season_average_mae':round(sum(abs(x['baseline_error']) for x in rows)/n,3) if n else None,'model_bias':round(sum(x['error'] for x in rows)/n,3) if n else None,'historical_range_coverage':round(sum(x['in_historical_range'] for x in rows)/n,3) if n else None}
+ decisions=[]
+ # For every same-week same-position pair, compare forecast and actual ranking.
+ # Ties in predictions or outcomes are excluded; this is NOT lineup-level win rate.
+ for key,rows in pair_week.items():
+  ordered=sorted(rows,key=lambda r:r['player'])
+  for i,a in enumerate(ordered):
+   for b in ordered[i+1:]:
+    if a['predicted']==b['predicted'] or a['actual']==b['actual']:continue
+    decisions.append((a['predicted']-b['predicted'])*(a['actual']-b['actual'])>0)
+ return {'version':'4.4-walk-forward-evaluation','season':season,'scoring':scoring,'evaluated':len(evaluated),'overall':stats(evaluated),'by_position':{k:stats(v) for k,v in sorted(by_position.items())},'by_week':[{**{'week':w},**stats(rows)} for w,rows in sorted(weekly.items())], 'pairwise_rank_accuracy':round(sum(decisions)/len(decisions),3) if decisions else None,'pairwise_comparisons':len(decisions),'sample':evaluated[-30:], 'methodology':'Each prediction uses only games with week strictly earlier than the evaluated game; defensive opponent allowances are also restricted to earlier weeks. Same-season season-average baseline is computed using prior weeks only. Evaluates existing 3.6 recipe without fitting parameters on test weeks.','limitations':['Only RB/WR/TE with at least three prior logged games and a recorded game are evaluated; missed/inactive games are excluded','This is within-season walk-forward testing, not independent season-held-out validation','Pairwise ranking evaluates all eligible same-week same-position pairs, not actual fantasy lineups','Floor/ceiling are uncalibrated historical ranges; coverage is diagnostic only','No live snap, route, injury, coverage or weather feeds are used','The limit of 1800 player-games bounds endpoint runtime; larger seasons may be truncated']}
 
 
 # 3.5: schedule rows are sourced from nflverse's nflverse/nfldata games CSV.
@@ -391,6 +427,16 @@ class Handler(SimpleHTTPRequestHandler):
    with connect() as c:
     year=int(season) if season.isdigit() else current_nfl_season()
     return self.send_json(accuracy_report(c,year,scoring))
+  if p=='/api/backtest':
+   q=parse_qs(urlparse(self.path).query);season=q.get('season',[''])[0];scoring=q.get('scoring',['ppr'])[0]
+   if scoring not in ('ppr','half','standard'):return self.send_json({'error':'Invalid scoring'},400)
+   try:
+    with connect() as c:
+     year=int(season) if season.isdigit() else season_latest(c)
+     if year is None:return self.send_json({'error':'Import player data first'},400)
+     result=walk_forward_backtest(c,year,scoring)
+    return self.send_json(result)
+   except ValueError as e:return self.send_json({'error':str(e)},400)
   if p=='/api/projection':
     q=parse_qs(urlparse(self.path).query,keep_blank_values=True)
     scoring=q.get('scoring',['ppr'])[0];season=q.get('season',[''])[0]
