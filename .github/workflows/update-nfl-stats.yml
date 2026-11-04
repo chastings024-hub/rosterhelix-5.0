@@ -1,0 +1,22 @@
+name: RosterHelix Daily NFL Stats
+
+on:
+  schedule:
+    - cron: '17 11 * * *'
+  workflow_dispatch:
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger secured import on Render
+        env:
+          RH_URL: ${{ secrets.ROSTERHELIX_URL }}
+          RH_TOKEN: ${{ secrets.ROSTERHELIX_CRON_TOKEN }}
+        run: |
+          test -n "$RH_URL" && test -n "$RH_TOKEN" || { echo 'Configure GitHub Actions secrets'; exit 1; }
+          curl --fail-with-body --silent --show-error --max-time 180 --retry 2 --retry-delay 10 \
+            -X POST "${RH_URL%/}/api/automation/import" \
+            -H "X-RosterHelix-Cron-Token: $RH_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{}'
