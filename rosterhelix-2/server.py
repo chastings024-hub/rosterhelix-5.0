@@ -133,6 +133,56 @@ def comparison(c,names,season,scoring,kind):
  if any(x is None for x in summaries):raise ValueError('One or more players were not found for this season')
  return {'type':kind,'season':season,'scoring':scoring,'players':summaries,'limitations':['Historical performance only; not a validated weekly projection','No live injury, snap percentage, coverage scheme, or upcoming matchup feed connected','Target share is an approximation using recorded team player targets; missing records affect it']}
 
+
+def percentile(values, fraction):
+ """Linear-interpolated empirical percentile; descriptive, not a calibrated forecast interval."""
+ values=sorted(values)
+ if not values:return 0.0
+ index=(len(values)-1)*fraction;lo=int(index);hi=min(lo+1,len(values)-1)
+ return values[lo]+(values[hi]-values[lo])*(index-lo)
+
+def player_projection(c,name,season,scoring,opponent=''):
+ """Transparent baseline using historical game logs and optional defensive positional allowance."""
+ rows=c.execute('SELECT * FROM player_games WHERE player=? AND season=? ORDER BY week DESC',(name,season)).fetchall()
+ if not rows:raise ValueError('Player not found for the selected season')
+ pos=rows[0]['pos'];points=[fantasy(r,scoring) for r in rows]
+ n=len(points);recent=points[:min(5,n)];season_avg=sum(points)/n;recent_avg=sum(recent)/len(recent)
+ # Blend recent form with full-season mean; small samples shrink toward season mean.
+ recent_weight=.35*min(1,n/5)
+ baseline=(1-recent_weight)*season_avg+recent_weight*recent_avg
+ multiplier=1.0;sample_weeks=0;allowance=None;league_allowance=None
+ if opponent:
+  if pos not in ('QB','RB','WR','TE'):raise ValueError('Opponent adjustment unavailable for this position')
+  defense_rows=c.execute("SELECT week,opponent,pos,passing_yards,passing_tds,interceptions,rushing_yards,rushing_tds,receptions,receiving_yards,receiving_tds,fumbles_lost FROM player_games WHERE season=? AND pos=? AND opponent IS NOT NULL AND opponent<>''",(season,pos)).fetchall()
+  per_defense={};all_weekly={}
+  for r in defense_rows:
+   key=(r['opponent'].upper(),r['week']);per_defense[key]=per_defense.get(key,0)+fantasy(r,scoring)
+  for (team,week),pts in per_defense.items():all_weekly.setdefault(team,[]).append(pts)
+  observed=all_weekly.get(opponent.upper(),[])
+  # Compare weekly positional team totals against league average of the same metric.
+  if observed and per_defense:
+   sample_weeks=len(observed);allowance=sum(observed)/sample_weeks
+   league_allowance=sum(per_defense.values())/len(per_defense)
+   if league_allowance>0:
+    raw=allowance/league_allowance
+    shrink=sample_weeks/(sample_weeks+8)
+    multiplier=max(.85,min(1.15,1+(raw-1)*.35*shrink))
+ projection=round(max(0,baseline*multiplier),2)
+ # Empirical distribution shifted by the baseline and opponent adjustment; not calibrated probabilities.
+ shift=projection-season_avg
+ floor=round(max(0,percentile(points,.20)+shift),2)
+ ceiling=round(max(projection,percentile(points,.80)+shift),2)
+ floor=min(floor,projection)
+ return {'name':name,'team':rows[0]['team'],'position':pos,'season':season,'scoring':scoring,'opponent':opponent or None,
+  'projected_points':projection,'floor':floor,'ceiling':ceiling,'games':n,
+  'season_ppg':round(season_avg,2),'recent_ppg':round(recent_avg,2),
+  'opponent_multiplier':round(multiplier,3),'opponent_sample_weeks':sample_weeks,
+  'opponent_position_points_allowed':round(allowance,2) if allowance is not None else None,
+  'league_position_points_allowed':round(league_allowance,2) if league_allowance is not None else None,
+  'confidence':'low' if n<4 else 'moderate' if n<8 else 'historical sample adequate',
+  'methodology':'65% season average + 35% last-five average for players with at least five games (recent weight shrinks for smaller samples). Optional opponent multiplier uses league-relative total position points allowed per observed week, shrunk toward 1.0 and capped at +/-15%. Floor/ceiling are shifted historical 20th/80th percentiles, not calibrated probability bounds.',
+  'limitations':['Opponent is manually selected; not verified against the upcoming schedule','No live injury, depth chart, snap share, weather, coverage scheme or opponent personnel adjustments','Historical game logs may include incomplete weeks or player absences; model is not backtested or calibrated']}
+
 class Handler(SimpleHTTPRequestHandler):
  def __init__(self,*a,**kw):super().__init__(*a,directory=str(ROOT/'static'),**kw)
  def send_json(self,obj,status=200,headers=None):
@@ -159,7 +209,7 @@ class Handler(SimpleHTTPRequestHandler):
   return self.rfile.read(n)
  def do_GET(self):
   p=urlparse(self.path).path
-  if p=='/api/health':return self.send_json({'ok':True,'version':'3.0-auto1','current_nfl_season':current_nfl_season()})
+  if p=='/api/health':return self.send_json({'ok':True,'version':'3.4-projections','current_nfl_season':current_nfl_season()})
   if p=='/api/automation/status':
    # Public status intentionally exposes no credentials or internal error details.
    try:
@@ -190,6 +240,24 @@ class Handler(SimpleHTTPRequestHandler):
      result=comparison(c,names,year,scoring,kind)
     return self.send_json(result)
    except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/projection':
+    q=parse_qs(urlparse(self.path).query,keep_blank_values=True)
+    scoring=q.get('scoring',['ppr'])[0];season=q.get('season',[''])[0]
+    names=q.get('player',[]);opponents=q.get('opponent',[])
+    if scoring not in ('ppr','half','standard') or not 1<=len(names)<=2 or any(not n.strip() or len(n)>100 for n in names):
+     return self.send_json({'error':'Choose one or two valid players and a scoring format'},400)
+    if opponents and len(opponents)!=len(names):return self.send_json({'error':'Supply an opponent for each player, or omit opponents'},400)
+    if any(x and (not re.fullmatch('[A-Za-z]{2,3}',x)) for x in opponents):return self.send_json({'error':'Invalid opponent abbreviation'},400)
+    try:
+     with connect() as c:
+      year=int(season) if season.isdigit() else season_latest(c)
+      if year is None:return self.send_json({'error':'Import player data first'},400)
+      players=[player_projection(c,name.strip(),year,scoring,opponents[i].upper() if opponents else '') for i,name in enumerate(names)]
+     ranked=sorted(players,key=lambda p:p['projected_points'],reverse=True)
+     return self.send_json({'version':'3.4','players':players,'recommended_start':ranked[0]['name'] if len(ranked)>1 else None,
+      'projection_edge':round(ranked[0]['projected_points']-ranked[1]['projected_points'],2) if len(ranked)>1 else None,
+      'recommendation_basis':'Higher estimated fantasy points from the specified historical season; not a validated weekly forecast'})
+    except ValueError as e:return self.send_json({'error':str(e)},400)
   if p=='/api/defense':
    q=parse_qs(urlparse(self.path).query)
    season=q.get('season',[''])[0]; scoring=q.get('scoring',['ppr'])[0]
