@@ -12,6 +12,7 @@ DB=DATA/'rosterhelix.sqlite3'
 DATA.mkdir(parents=True,exist_ok=True)
 MAX_BODY=8*1024*1024
 IMPORT_LOCK=threading.Lock()
+AUTO_LOG=DATA/"import_status.json"
 NFLVERSE_URL="https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_{season}.csv"
 GAME_COLUMNS=["season","week","player","team","pos","opponent","passing_yards","passing_tds","interceptions","rushing_yards","rushing_tds","receptions","receiving_yards","receiving_tds","targets","fumbles_lost"]
 
@@ -97,6 +98,13 @@ def import_nflverse_season(season):
 
 
 
+def write_import_status(status, season, count=None, error=None):
+ """Record the latest scheduled run on the persistent disk."""
+ info={'status':status,'season':season,'timestamp_utc':int(time.time()),'rows_processed':count,'error':error}
+ temp=AUTO_LOG.with_suffix('.tmp')
+ temp.write_text(json.dumps(info))
+ temp.replace(AUTO_LOG)
+
 def current_nfl_season():
  today=time.gmtime()
  return today.tm_year if today.tm_mon>=3 else today.tm_year-1
@@ -151,7 +159,13 @@ class Handler(SimpleHTTPRequestHandler):
   return self.rfile.read(n)
  def do_GET(self):
   p=urlparse(self.path).path
-  if p=='/api/health':return self.send_json({'ok':True,'version':'3.0-phase1','current_nfl_season':current_nfl_season()})
+  if p=='/api/health':return self.send_json({'ok':True,'version':'3.0-auto1','current_nfl_season':current_nfl_season()})
+  if p=='/api/automation/status':
+   # Public status intentionally exposes no credentials or internal error details.
+   try:
+    info=json.loads(AUTO_LOG.read_text())
+    return self.send_json({k:info.get(k) for k in ('status','season','timestamp_utc','rows_processed')})
+   except (FileNotFoundError,ValueError,OSError):return self.send_json({'status':'never_run'})
   if p=='/api/auth/me':
    u=self.user();return self.send_json({'authenticated':bool(u),'email':u['email'] if u else None,'csrf':u['csrf'] if u else None,'admin':self.admin(u)})
   if p=='/api/stats':
@@ -206,6 +220,25 @@ class Handler(SimpleHTTPRequestHandler):
    self.send_response(200) if False else None
   return super().do_GET()
  def do_POST(self):
+  p=urlparse(self.path).path
+  if p=='/api/automation/import':
+   # Machine-to-machine endpoint; do not require browser Origin, but require a strong shared secret.
+   expected=os.environ.get('ROSTERHELIX_CRON_TOKEN','')
+   provided=self.headers.get('X-RosterHelix-Cron-Token','')
+   if len(expected)<32 or not provided or not hmac.compare_digest(expected,provided):
+    return self.send_json({'error':'Unauthorized'},401)
+   if not IMPORT_LOCK.acquire(blocking=False):
+    return self.send_json({'error':'Import already running'},409)
+   season=current_nfl_season()
+   try:
+    count=import_nflverse_season(season)
+    write_import_status('success',season,count=count)
+    return self.send_json({'ok':True,'season':season,'rows_processed':count})
+   except Exception as e:
+    write_import_status('failed',season,error=type(e).__name__)
+    print('Scheduled NFLverse import failed:',repr(e),flush=True)
+    return self.send_json({'error':'Scheduled import failed; check Render logs'},502)
+   finally:IMPORT_LOCK.release()
   if not self.origin_ok():return self.send_json({'error':'Same-origin request required'},403)
   p=urlparse(self.path).path
   try:raw=self.read_body()
