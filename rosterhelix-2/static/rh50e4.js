@@ -1,0 +1,16 @@
+(()=>{
+  const init=()=>{
+    const accuracy=document.getElementById('accuracy');if(!accuracy||document.getElementById('rh-rolling'))return;
+    const section=document.createElement('section');section.id='rh-rolling';section.className='panel';
+    section.style.cssText='margin-top:16px;padding:16px';
+    section.innerHTML=`<h3 style="margin:0 0 5px">5.0E.4 · Rolling-Season Model Validation</h3><p class="muted" style="margin:0 0 12px">Train on earlier seasons and evaluate each later season separately. Production remains unchanged.</p><form id="rh-rolling-form" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end"><label>From season <input name="start" type="number" min="2004" max="2100" value="2023" style="width:90px"></label><label>To season <input name="end" type="number" min="2004" max="2100" value="2025" style="width:90px"></label><label>Training lookback <select name="lookback"><option>2</option><option selected>3</option><option>4</option></select></label><label>Scoring <select name="scoring"><option value="ppr">PPR</option><option value="half">Half PPR</option><option value="standard">Standard</option></select></label><label>Scan limit <select name="limit"><option>300</option><option selected>900</option><option>1500</option><option>3000</option></select></label><button type="submit">Run rolling validation</button></form><div id="rh-rolling-output" aria-live="polite" style="margin-top:12px"></div>`;
+    accuracy.appendChild(section);
+    const form=section.querySelector('form'),out=section.querySelector('#rh-rolling-output');
+    form.addEventListener('submit',async e=>{e.preventDefault();const fd=new FormData(form),params=new URLSearchParams(fd);const start=Number(fd.get('start')),end=Number(fd.get('end'));if(end<start||end-start>3){out.textContent='Select 1–4 consecutive test seasons.';return}out.textContent='Running historical evaluation…';
+      try{const res=await fetch('/api/intelligence/research/rolling?'+params);const data=await res.json();if(!res.ok)throw new Error(data.error||'Request failed');const sum=data.summary||{};
+      const fmt=v=>Number.isFinite(v)?v.toFixed(3):'—';
+      const rows=(data.results||[]).map(r=>{const m=r.holdout||{};const escape=t=>String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));return `<tr><td>${escape(r.holdout_season||'—')}</td><td>${m.n||0}</td><td>${fmt(m.production_mae)}</td><td>${fmt(m.candidate_mae)}</td><td>${fmt(m.delta_mae)}</td></tr>`}).join('');
+      out.innerHTML=`<p><strong>${sum.player_games||0}</strong> player-games · Production MAE <strong>${fmt(sum.production_mae)}</strong> · Candidate MAE <strong>${fmt(sum.candidate_mae)}</strong> · Improvement <strong>${fmt(sum.delta_mae)}</strong> · Candidate wins <strong>${sum.seasons_candidate_wins||0}/${sum.evaluated_seasons||0}</strong> seasons</p><div style="overflow-x:auto"><table style="width:100%"><thead><tr><th>Holdout</th><th>Games</th><th>Production</th><th>Candidate</th><th>Δ MAE</th></tr></thead><tbody>${rows}</tbody></table></div><small class="muted">Positive Δ means lower candidate error. Research only; no model promotion.</small>`;
+      }catch(err){out.textContent='Evaluation failed: '+err.message}});
+  };if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();
