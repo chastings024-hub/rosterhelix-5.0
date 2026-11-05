@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from http.cookies import SimpleCookie
 from rh_intelligence import score_player,compare_weekly,MODEL,POSITIONS
+from rh_model_d3 import evaluate as evaluate_d3
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('ROSTERHELIX_DATA_DIR',str(ROOT/'data')))
@@ -437,6 +438,36 @@ class Handler(SimpleHTTPRequestHandler):
      if year is None:return self.send_json({'error':'Import player data first'},400)
      result=walk_forward_backtest(c,year,scoring)
     return self.send_json(result)
+   except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/intelligence/model-lab/multiseason':
+   q=parse_qs(urlparse(self.path).query)
+   raw=q.get('seasons',['2023,2024,2025'])[0]
+   scoring=q.get('scoring',['ppr'])[0]
+   limit=q.get('limit',['300'])[0]
+   try:
+    years=[int(v.strip()) for v in raw.split(',')]
+    if not 1<=len(years)<=4 or len(set(years))!=len(years) or any(not 2000<=v<=current_nfl_season() for v in years):raise ValueError('Choose 1-4 distinct valid seasons')
+    if scoring not in ('ppr','half','standard') or not limit.isdigit() or not 50<=int(limit)<=1000:raise ValueError('Invalid scoring or limit (50-1000)')
+    with connect() as c:
+     reports=[evaluate_d3(c,year,scoring,player_projection,int(limit)) for year in years]
+    valid=[r for r in reports if r['overall']['n']]
+    n=sum(r['overall']['n'] for r in valid)
+    def weighted(key):return round(sum(r['overall'][key]*r['overall']['n'] for r in valid)/n,3) if n else None
+    summary={'player_games':n,'existing_mae':weighted('existing_mae'),'candidate_mae':weighted('candidate_mae'),'season_average_mae':weighted('season_average_mae')}
+    summary['candidate_delta_mae']=round(summary['existing_mae']-summary['candidate_mae'],3) if n else None
+    return self.send_json({'version':'5.0D.4-multiseason-research','scoring':scoring,'summary':summary,'seasons':reports,'production_model_unchanged':True,'limitations':['Up to four seasons, each independently walk-forward evaluated','Per-season input scan limit may produce fewer eligible games','Cross-season aggregate is player-game weighted; seasons are not held out from human model-design decisions','No automatic model promotion or claims of verified accuracy']})
+   except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/intelligence/model-lab':
+   q=parse_qs(urlparse(self.path).query)
+   season=q.get('season',[''])[0];scoring=q.get('scoring',['ppr'])[0];limit=q.get('limit',['500'])[0]
+   if scoring not in ('ppr','half','standard') or (season and (not season.isdigit() or not 2000<=int(season)<=current_nfl_season())) or not limit.isdigit() or not 50<=int(limit)<=1500:
+    return self.send_json({'error':'Invalid season, scoring or limit'},400)
+   try:
+    with connect() as c:
+     year=int(season) if season else season_latest(c)
+     if year is None:return self.send_json({'error':'Import player data first'},400)
+     report=evaluate_d3(c,year,scoring,player_projection,int(limit))
+    return self.send_json(report)
    except ValueError as e:return self.send_json({'error':str(e)},400)
   if p=='/api/intelligence/validation':
    q=parse_qs(urlparse(self.path).query)
