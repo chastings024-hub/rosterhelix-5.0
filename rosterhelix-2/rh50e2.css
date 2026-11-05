@@ -1,7 +1,0 @@
-/* 5.0E.2 research results readability */
-#accuracy .rh50e-lab h4{font-size:14px;color:#14345a;margin:17px 0 5px}
-#accuracy .rh50e-lab .rh50e-scroll{border:1px solid #d8e6f4;border-radius:10px;margin:8px 0;overflow:auto}
-#accuracy .rh50e-lab .rh50e-scroll table{min-width:570px}
-#accuracy .rh50e-lab thead{background:#edf5ff}
-#accuracy .rh50e-lab tbody tr:nth-child(even){background:#f7fbff}
-#accuracy .rh50e-lab td:first-child{font-weight:700}
