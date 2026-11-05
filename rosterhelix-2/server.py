@@ -8,6 +8,8 @@ from http.cookies import SimpleCookie
 from rh_intelligence import score_player,compare_weekly,MODEL,POSITIONS
 from rh_model_d3 import evaluate as evaluate_d3
 from rh_model_e import evaluate_ablation
+from rh_model_e3 import evaluate_heldout
+from rh_model_e4 import evaluate_rolling
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('ROSTERHELIX_DATA_DIR',str(ROOT/'data')))
@@ -438,6 +440,25 @@ class Handler(SimpleHTTPRequestHandler):
      year=int(season) if season.isdigit() else season_latest(c)
      if year is None:return self.send_json({'error':'Import player data first'},400)
      result=walk_forward_backtest(c,year,scoring)
+    return self.send_json(result)
+   except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/intelligence/research/rolling':
+   q=parse_qs(urlparse(self.path).query)
+   try:
+    start=int(q.get('start',['2023'])[0]);end=int(q.get('end',['2025'])[0]);scoring=q.get('scoring',['ppr'])[0]
+    limit=int(q.get('limit',['900'])[0]);lookback=int(q.get('lookback',['3'])[0])
+    if end>current_nfl_season():raise ValueError('Invalid test season')
+    with connect() as c:result=evaluate_rolling(c,start,end,scoring,player_projection,limit,lookback)
+    return self.send_json(result)
+   except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/intelligence/research/heldout':
+   q=parse_qs(urlparse(self.path).query)
+   try:
+    train=[int(v.strip()) for v in q.get('train',['2022,2023,2024'])[0].split(',')]
+    test=int(q.get('test',['2025'])[0]);scoring=q.get('scoring',['ppr'])[0]
+    limit=int(q.get('limit',['1200'])[0])
+    if test>current_nfl_season():raise ValueError('Invalid holdout season')
+    with connect() as c:result=evaluate_heldout(c,train,test,scoring,player_projection,limit)
     return self.send_json(result)
    except ValueError as e:return self.send_json({'error':str(e)},400)
   if p=='/api/intelligence/research/ablation':
