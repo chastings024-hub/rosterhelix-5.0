@@ -1,0 +1,14 @@
+/* RosterHelix 6.0: animated double helix, replacing atom artwork */
+.rh-helix{position:relative;display:flex;align-items:center;justify-content:center;min-height:310px;overflow:hidden;border-radius:24px;border:1px solid #2b5b88;background:radial-gradient(ellipse at center,#123f70 0%,#071a32 72%);box-shadow:inset 0 0 55px #3b9ff522}
+.rh-helix svg{width:min(100%,290px);height:270px;filter:drop-shadow(0 0 11px #48adff55)}
+.rh-helix .rh-strand-a,.rh-helix .rh-strand-b{fill:none;stroke-width:5;stroke-linecap:round}
+.rh-helix .rh-strand-a{stroke:#53b8ff}.rh-helix .rh-strand-b{stroke:#f0c569}
+.rh-helix .rh-rung{stroke:#b6dcff;stroke-width:2;opacity:.6}
+.rh-helix .rh-dna-motion{transform-origin:50% 50%;animation:rh-dna-float 6s ease-in-out infinite}
+.rh-helix .rh-dna-glow{animation:rh-dna-glow 3s ease-in-out infinite alternate}
+.rh-helix .rh-helix-label{position:absolute;bottom:16px;left:0;right:0;text-align:center;color:#d5eaff;font-size:10px;letter-spacing:2px;font-weight:800}
+@keyframes rh-dna-float{0%,100%{transform:translateY(-4px) scaleX(1)}50%{transform:translateY(4px) scaleX(.78)}}
+@keyframes rh-dna-glow{from{opacity:.7}to{opacity:1}}
+@media(max-width:1100px){.hero .rh-helix{display:flex;min-height:220px}.rh-helix svg{height:210px}}
+@media(prefers-reduced-motion:reduce){.rh-helix .rh-dna-motion,.rh-helix .rh-dna-glow{animation:none!important}}
+.rh60-trade-filter{width:100%;margin-bottom:7px;min-width:0}
