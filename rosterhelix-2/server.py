@@ -438,6 +438,27 @@ class Handler(SimpleHTTPRequestHandler):
      result=walk_forward_backtest(c,year,scoring)
     return self.send_json(result)
    except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/intelligence/validation':
+   q=parse_qs(urlparse(self.path).query)
+   season=q.get('season',[''])[0];scoring=q.get('scoring',['ppr'])[0]
+   if scoring not in ('ppr','half','standard') or (season and (not season.isdigit() or not 2000<=int(season)<=current_nfl_season())):
+    return self.send_json({'error':'Invalid season or scoring'},400)
+   try:
+    with connect() as c:
+     year=int(season) if season else season_latest(c)
+     if year is None:return self.send_json({'error':'Import player data first'},400)
+     report=walk_forward_backtest(c,year,scoring)
+    model=(report.get('overall') or {}).get('model_mae')
+    baseline=(report.get('overall') or {}).get('season_average_mae')
+    gain=round(baseline-model,3) if model is not None and baseline is not None else None
+    report['mae_improvement']=gain
+    report['release_gate']={'passed':gain is not None and gain>0,
+     'summary':('Current formula beats the historical baseline on this evaluated sample; not proof of generalization.' if gain is not None and gain>0 else 'Current formula has not beaten the historical baseline on this sample. Do not promote a new formula.'),
+     'status':'diagnostic_only_no_model_change',
+     'requirements':['Repeat across multiple completed seasons','Compare against the currently deployed 4.4 baseline on identical observations','Test on held-out future games before replacing production model']}
+    report['version']='5.0D-validation-v1'
+    return self.send_json(report)
+   except ValueError as e:return self.send_json({'error':str(e)},400)
   if p=='/api/intelligence':
    q=parse_qs(urlparse(self.path).query,keep_blank_values=True)
    names=q.get('player',[]);opponents=q.get('opponent',[])
