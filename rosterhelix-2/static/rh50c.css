@@ -1,0 +1,24 @@
+/* RosterHelix 5.0C — preserves Premium Hybrid blue, gold and RH atom */
+.rh50c-panel{margin:16px 0;border:1px solid #c9dcf3;border-radius:15px;padding:17px;background:#fff;box-shadow:0 6px 24px rgba(16,45,87,.04)}
+.rh50c-heading{display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:15px}
+.rh50c-heading h3{font-size:18px;color:#102b52;margin:4px 0}
+.rh50c-heading p{font-size:12px;color:#667f9e;margin:0}
+.rh50c-kicker{font-size:10px;font-weight:800;letter-spacing:1.6px;color:#1976d2}
+.rh50c-experimental{border:1px solid #f0d69a;background:#fff8e8;color:#94631a;border-radius:20px;padding:5px 9px;font-size:11px;white-space:nowrap}
+.rh50c-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.rh50c-player{background:linear-gradient(145deg,#f4f9ff,#fff);border:1px solid #d4e4f6;border-top:3px solid #2382db;border-radius:12px;padding:14px;min-width:0}
+.rh50c-player:nth-child(even){border-top-color:#f0b93f}
+.rh50c-name{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;color:#112f56}
+.rh50c-name span{font-size:11px;color:#6d819b}
+.rh50c-score{font-size:35px;font-weight:800;color:#126dc3;margin:9px 0 0;line-height:1.1}
+.rh50c-score small{font-size:13px;color:#6984a1}
+.rh50c-label,.rh50c-note{font-size:11px;color:#69809a;margin:5px 0}
+.rh50c-metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
+.rh50c-metrics>div{display:flex;flex-direction:column;background:#eaf3fe;padding:9px;border-radius:8px;color:#0d3a70}
+.rh50c-metrics small{font-size:10px;color:#617b9a;margin-top:3px}
+.rh50c-verdict{background:#102b52;color:#fff;border-radius:10px;padding:12px;display:flex;gap:10px;justify-content:space-between;flex-wrap:wrap;margin-top:12px}
+.rh50c-verdict span{color:#b9dcff;font-size:12px}
+.rh50c-caution{font-size:11px;color:#657b96;line-height:1.5;margin:12px 0 0}
+.rh50c-quick .rh50c-player{padding:10px}
+.rh50c-quick .rh50c-score{font-size:27px}
+@media(max-width:700px){.rh50c-heading{flex-wrap:wrap}.rh50c-cards{grid-template-columns:1fr}.rh50c-verdict{flex-direction:column}}
