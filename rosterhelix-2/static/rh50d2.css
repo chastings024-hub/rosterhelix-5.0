@@ -1,0 +1,48 @@
+/* 5.0D.2: targeted stability fixes; leave RH atom and overall palette untouched. */
+#home .rh41-grid,#home .rh41-panel,#home .rh41-inline,#home .rh41-results{min-width:0;max-width:100%;overflow:visible}
+#home .rh41-inline{display:flex;flex-wrap:wrap;gap:7px;align-items:stretch}
+#home .rh41-inline input{min-width:150px;flex:1 1 160px;max-width:100%}
+#home .rh41-inline button{flex:0 0 auto}
+#home .rh50c-quick[hidden]{display:none!important}
+#home .rh50d2-quick-results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:9px 0}
+#home .rh50d2-quick-player{min-width:0;border:1px solid #cddff4;background:#f3f8ff;border-radius:10px;padding:10px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px;color:#163c66}
+#home .rh50d2-quick-player>div:first-child{min-width:0;overflow-wrap:anywhere}
+#home .rh50d2-quick-player small{display:block;color:#6a809a;font-size:10px}
+#home .rh50d2-quick-score{font-size:27px;font-weight:800;color:#116fc7;line-height:1}
+#home .rh50d2-quick-score small{display:inline;font-size:11px}
+#home .rh50d2-quick-proj{grid-column:1/-1;font-weight:700}
+#home .rh50d2-quick-proj small{display:inline}
+#home .rh50d2-quick-verdict{display:flex;flex-wrap:wrap;gap:6px;justify-content:space-between;background:#102d52;color:white;border-radius:9px;padding:9px 11px;font-size:12px}
+#home .rh50d2-quick-verdict b{color:#ffd36d}
+#home .rh50d2-quick-actions{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
+#home .rh50d2-quick-actions small{font-size:10px;flex:1 1 170px;color:#637d99}
+#home .rh43-custom-bar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;min-height:0;height:auto;line-height:1.35;padding:12px 14px}
+#home .rh43-custom-bar>div{min-width:0;flex:1 1 180px;display:flex;flex-direction:column;gap:4px}
+#home .rh43-custom-bar b,#home .rh43-custom-bar small{display:block;white-space:normal;overflow-wrap:anywhere;line-height:1.35}
+#home #rh43Editor:not([hidden]){display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;min-width:0}
+#home .rh43-edit-row{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:7px;flex-wrap:wrap}
+#home .rh43-edit-row label{min-width:0;overflow-wrap:anywhere}
+/* Trade Lab: eliminate competing nested widths and dropdown clipping. */
+#trade .rh43-page-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;min-width:0}
+#trade .rh43-page-head>div{min-width:0;flex:1 1 220px}
+#trade .rh43-trade-app{min-width:0;max-width:100%;overflow:visible;isolation:isolate}
+#trade .rh43-trade-controls{display:flex;align-items:end;flex-wrap:wrap;gap:10px;min-width:0}
+#trade .rh43-trade-controls label{display:flex;flex-direction:column;min-width:110px;flex:1 1 120px;gap:4px}
+#trade .rh43-trade-controls input,#trade .rh43-trade-controls select{width:100%;min-width:0;max-width:100%}
+#trade .rh43-trade-controls button{flex:0 0 auto}
+#trade .rh43-trade-sides{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start;min-width:0;overflow:visible}
+#trade .rh43-trade-side{min-width:0;max-width:100%;overflow:visible;position:relative}
+#trade .rh43-trade-side h3{line-height:1.35;overflow-wrap:anywhere}
+#trade .rh43-player-entry{display:flex;align-items:stretch;gap:6px;min-width:0;position:relative}
+#trade .rh43-player-search{position:relative;min-width:0;flex:1 1 auto;overflow:visible}
+#trade .rh43-player-search input{width:100%;min-width:0;max-width:100%;box-sizing:border-box}
+#trade .rh43-dropdown:not([hidden]){position:absolute;top:calc(100% + 3px);left:0;right:0;z-index:10000;max-height:220px;overflow-y:auto;background:#fff;box-shadow:0 10px 24px #0e31502b}
+#trade .rh43-dropdown[hidden]{display:none!important}
+#trade .rh43-remove{flex:0 0 32px}
+#trade .rh43-output,#trade .rh50d2-trade-intelligence{min-width:0;max-width:100%;overflow-wrap:anywhere;clear:both}
+#trade .rh43-output .rh43-trade-sides{gap:10px}
+#trade .rh43-side-result{min-width:0;overflow-wrap:anywhere}
+#trade .rh43-stat-line{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;min-width:0}
+#trade .rh43-stat-line span{min-width:0;flex:1 1 140px;overflow-wrap:anywhere}
+#trade .rh50d2-trade-intelligence .rh50c-cards{grid-template-columns:repeat(auto-fit,minmax(175px,1fr))}
+@media(max-width:760px){#trade .rh43-trade-sides{grid-template-columns:minmax(0,1fr)}#home .rh50d2-quick-results{grid-template-columns:minmax(0,1fr)}#trade .rh43-trade-controls button{width:100%}}
