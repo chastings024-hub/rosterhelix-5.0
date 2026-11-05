@@ -11,6 +11,7 @@ from rh_model_e import evaluate_ablation
 from rh_model_e3 import evaluate_heldout
 from rh_model_e4 import evaluate_rolling
 
+from rh_search_v6 import search_players, matching_player_names
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('ROSTERHELIX_DATA_DIR',str(ROOT/'data')))
 DB=DATA/'rosterhelix.sqlite3'
@@ -403,7 +404,7 @@ class Handler(SimpleHTTPRequestHandler):
    with connect() as c:
     year=int(season) if season.isdigit() else season_latest(c)
     if year is None:return self.send_json({'season':None,'players':[]})
-    rows=c.execute('SELECT player,MAX(pos) pos,MAX(team) team,COUNT(*) games FROM player_games WHERE season=? AND player LIKE ? GROUP BY player ORDER BY CASE WHEN player LIKE ? THEN 0 ELSE 1 END, games DESC,player LIMIT 75',(year,'%'+term+'%',term+'%')).fetchall()
+    rows=search_players(c,year,term)
    return self.send_json({'season':year,'players':[dict(r) for r in rows]})
   if p=='/api/analyze':
    q=parse_qs(urlparse(self.path).query);kind=q.get('type',['start'])[0];scoring=q.get('scoring',['ppr'])[0]
@@ -635,7 +636,10 @@ class Handler(SimpleHTTPRequestHandler):
     year=int(season) if season.isdigit() else season_latest(c)
     if year is None:return self.send_json({'players':[],'scoring':scoring,'demo':True,'season':None})
     sql='SELECT * FROM player_games WHERE season=?';args=[year]
-    if search:sql+=' AND player LIKE ?';args.append('%'+search+'%')
+    if search:
+     names=matching_player_names(c,year,search,limit=120)
+     if not names:return self.send_json({'players':[],'scoring':scoring,'demo':False,'season':year})
+     sql+=' AND player IN ('+','.join('?' for _ in names)+')';args.extend(names)
     rows=c.execute(sql+' ORDER BY week DESC LIMIT 20000',args).fetchall()
    groups={}
    for r in rows:
