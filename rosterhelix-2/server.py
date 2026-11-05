@@ -5,6 +5,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from http.cookies import SimpleCookie
+from rh_intelligence import score_player,compare_weekly,MODEL,POSITIONS
 
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('ROSTERHELIX_DATA_DIR',str(ROOT/'data')))
@@ -436,6 +437,49 @@ class Handler(SimpleHTTPRequestHandler):
      if year is None:return self.send_json({'error':'Import player data first'},400)
      result=walk_forward_backtest(c,year,scoring)
     return self.send_json(result)
+   except ValueError as e:return self.send_json({'error':str(e)},400)
+  if p=='/api/intelligence':
+   q=parse_qs(urlparse(self.path).query,keep_blank_values=True)
+   names=q.get('player',[]);opponents=q.get('opponent',[])
+   scoring=q.get('scoring',['ppr'])[0];season=q.get('season',[''])[0]
+   league=q.get('league_size',['12'])[0];before=q.get('before_week',[''])[0]
+   if scoring not in ('ppr','half','standard') or not 1<=len(names)<=12 or any(not n.strip() or len(n)>100 for n in names):
+    return self.send_json({'error':'Select 1-12 valid players and a scoring format'},400)
+   if opponents and len(opponents)!=len(names):return self.send_json({'error':'Supply an opponent for every player or omit all opponents'},400)
+   if any(x and not re.fullmatch('[A-Za-z]{2,3}',x) for x in opponents):return self.send_json({'error':'Invalid opponent'},400)
+   if not league.isdigit() or not 8<=int(league)<=20:return self.send_json({'error':'League size must be 8-20'},400)
+   if before and (not before.isdigit() or not 1<=int(before)<=19):return self.send_json({'error':'Invalid before_week'},400)
+   if season and (not season.isdigit() or not 2000<=int(season)<=current_nfl_season()):return self.send_json({'error':'Invalid season'},400)
+   try:
+    with connect() as c:
+     year=int(season) if season else season_latest(c)
+     if year is None:return self.send_json({'error':'Import player data first'},400)
+     cutoff=int(before) if before else None
+     projections=[player_projection(c,name.strip(),year,scoring,opponents[i].upper() if opponents else '',before_week=cutoff) for i,name in enumerate(names)]
+     # Only players with prior recorded games contribute to each position's rating reference.
+     # Pool projections use no opponent adjustment, so all players are compared on equal footing.
+     pools={}
+     for pos in {p['position'] for p in projections}:
+      if pos not in POSITIONS:continue
+      pool_names=[r['player'] for r in c.execute('SELECT player FROM player_games WHERE season=? AND pos=? AND (? IS NULL OR week<?) GROUP BY player HAVING COUNT(*)>=3 ORDER BY SUM(COALESCE(targets,0)+COALESCE(rushing_yards,0)/4.0) DESC LIMIT 150',(year,pos,cutoff,cutoff)).fetchall()]
+      pools[pos]=[player_projection(c,n,year,scoring,before_week=cutoff)['projected_points'] for n in pool_names]
+    # Schedule data is read only from the existing local cache; never request network here.
+    remaining={}
+    if not cutoff and year==current_nfl_season():
+     try:
+      schedule=json.loads(SCHEDULE_CACHE.read_text())
+      today=datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+      for g in schedule.get('games',[]):
+       if g.get('season')==year and g.get('date','')>today:
+        for t in (g.get('home'),g.get('away')):
+         if t:remaining[t]=remaining.get(t,0)+1
+     except (OSError,ValueError,TypeError):pass
+    result=[score_player(p,pools.get(p['position'],[]),remaining.get(p['team']) if remaining else None,int(league)) for p in projections]
+    return self.send_json({'model_version':MODEL,'season':year,'scoring':scoring,'league_size':int(league),
+      'players':result,'start_sit':compare_weekly(result),
+      'status':'research_preview_not_validated',
+      'methodology':'Weekly rating is within-position percentile of existing 3.6 opportunity-adjusted projections plus a small sample-size reliability adjustment. Trade rating is provisional and withheld when the verified future schedule is unavailable. No trained new model is claimed.',
+      'limitations':['Not a calibrated probability or validated trade fairness score','Position rating reference is limited to 150 high-opportunity players with 3+ recorded games per position','No injury, snaps, routes, coverage, weather or market prices connected','Trade values do not yet account for specific roster, flex slots or lineup optimization']})
    except ValueError as e:return self.send_json({'error':str(e)},400)
   if p=='/api/projection':
     q=parse_qs(urlparse(self.path).query,keep_blank_values=True)
